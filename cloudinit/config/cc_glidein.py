@@ -30,30 +30,123 @@ class SECTIONS(object):
     additional_args = 'additional_args'
 
 class PARAMETERS(object):
-    default_max_lifetime = 'default_max_lifetime'
-    disable_shutdown = 'disable_shutdown'
-    contextualize_protocol = 'contextualize_protocol'
-    ec2_url = 'ec2_url'
-    user_name = 'user_name'
-    user_home = 'user_home'
-    user_ids  = 'user_ids'
-    args = 'args'
-    webbase ='webbase'
-    proxy_file_name = 'proxy_file_name'
-    proxy ='proxy'
-    environment = 'environment'
+    param_default_max_lifetime = 'default_max_lifetime'
+    param_disable_shutdown = 'disable_shutdown'
+    param_contextualize_protocol = 'contextualize_protocol'
+    param_ec2_url = 'ec2_url'
+    param_user_name = 'user_name'
+    param_user_home = 'user_home'
+    param_user_ids  = 'user_ids'
+    param_args = 'args'
+    param_webbase ='webbase'
+    param_proxy_file_name = 'proxy_file_name'
+    param_proxy ='proxy'
+    param_environment = 'environment'
 
-class GLIDEIN_DEFAULT_VALUES(object):
-    # for default configuration file
-    default_max_lifetime =  86400 # 1 day
-    disable_shutdown = False
-    contextualize_protocol = 'EC2'
-    ec2_url = PATHS.runtime_directory + '/' + PATHS.global_userdata_file
-    user_name = 'glidein'
-    user_home = '/scratch/glidein'
-    user_ids = '509.509'
-    # other
-    proxy_file_name = 'proxy'
+    def __init__(self):
+        self.data = dict()
+
+    def key_value_parameter(self,attribute,join_character='='):
+        return join_character.join([attribute,self.__getattr__(attribute)])
+
+    def parse(self,cfg):
+        """
+        1) Setup default values
+        2) Add/override values from the /etc/glideinwms/pilot.ini file
+        #3) Add/override values from dynamic user-data
+        """
+
+        self.__setup_default_values__()
+        self.__open_and_parse_etc_config__(PATHS.default_config_file)
+        #self.__parse_user_data__(cfg)
+    def update(self,values):
+        """Adds values to the class-wide dictionary with the parameters"""
+        if isinstance(values,dictionary):
+            self.data.update(values)
+        else:
+            raise ValueError("values argument must be a dictionary")
+
+
+    def __parse_user_data__(self,user_data):
+        """
+        Thanks to cloud-init we can get this as a dictionary already.
+        Just grab the interesting parts
+        TODO(marek): Do this recursively
+        """
+        hierarchy = {SECTIONS.glidein_startup: [param_args,param_webbase],
+                     SECTIONS.vm_properties: [param_default_max_lifetime,param_contextualize_protocol,
+                                              param_disable_shutdown,param_user_home,param_user_dir,param_user_ids],
+                     SECTIONS.proxy: [],
+                     SECTIONS.additional_args: []
+                    }
+
+        def _get(src,dst,val):
+            try:
+                dst[val] = src[val]
+            except KeyError:
+                pass
+
+        for section,subsections in user_data.iteritems():
+            if not subsections: # toplevel arg
+                _get(user_data,self.data,section)
+            else:
+                subsection = user_data.get(section, dict())
+                for subsection_name in subsections:
+                    _get(subsection,self.data,subsection_name)
+
+    def __open_and_parse_etc_config__(self,filename):
+        """
+        """
+        try:
+            with open(filename,'r') as fh:
+                self.__parse_etc_config__(fh)
+        except IOError:
+            pass # no such file, I guess? 
+    def __parse_etc_config__(self,config):
+        """
+        The config should be iterable,
+        a file object is fine as well
+        """
+        for line in config:
+            if line.startswith('['):
+                continue
+            line = line.strip()
+            key,value = line.split('=',2)
+            self.data[key] = value
+
+    def __setup_default_values__(self):
+        is self.data:
+            return
+        self.data[param_default_max_lifetime] = 86400,# 1 day
+        self.data[param_disable_shutdown] = False,
+        self.data[param_contextualize_protocol] = 'EC2',
+        self.data[param_ec2_url] = ''.join([PATHS.runtime_directory,'/',PATHS.global_userdata_file])
+        self.data[param_user_name] = 'glidein'
+        self.data[param_user_home] = '/scratch/glidein'
+        self.data[param_user_ids]  = '509.509'
+        self.data[param_proxy_file_name] = 'proxy'
+
+    def __getattr__(self,attribute):
+        result = None
+        try:
+            result = self.data[attribute]
+        except (KeyError,AttributeError):
+            result = ""
+        finally:
+            return result
+
+
+#class GLIDEIN_DEFAULT_VALUES(object):
+#    # for default configuration file
+#    default_max_lifetime =  86400 # 1 day
+#    disable_shutdown = False
+#    contextualize_protocol = 'EC2'
+#    ec2_url = ''.join([PATHS.runtime_directory,'/',PATHS.global_userdata_file])
+#    user_name = 'glidein'
+#    user_home = '/scratch/glidein'
+#    user_ids = '509.509'
+#    # other
+#    proxy_file_name = 'proxy'
 
 class MSG(object):
     cannotuse = "Cannot find section %s, will use default values"
@@ -80,11 +173,14 @@ def handle(_name, cfg, cloud, log, _args):
        return
 
    glidein_cfg = cfg[MODULE_NAME]
+   parameters = PARAMETERS()
+   parameters.parse(glidein_cfg)
 
    ##### VM-PROPERTIES #####
    vm_properties_cfg = None
    try:
        vm_properties_cfg = glidein_cfg[SECTIONS.vm_properties]
+       parameters.update(vm_properties_cfg)
    except KeyError:
        print MSG.cannotuse % SECTIONS.vm_properties
        vm_properties_cfg = dict()
@@ -98,17 +194,22 @@ def handle(_name, cfg, cloud, log, _args):
    glidein_config_file = dict()
 
    # configurable values from the [DEFAULTS] section
-   default_max_lifetime = make_key_value(PARAMETERS.default_max_lifetime,vm_properties_cfg,default=GLIDEIN_DEFAULT_VALUES.default_max_lifetime)
-   contextualize_protocol = make_key_value(PARAMETERS.contextualize_protocol,vm_properties_cfg,default=GLIDEIN_DEFAULT_VALUES.contextualize_protocol)
-   disable_shutdown = make_key_value(PARAMETERS.disable_shutdown,vm_properties_cfg,default=GLIDEIN_DEFAULT_VALUES.disable_shutdown)
-   ec2_url = make_key_value(PARAMETERS.ec2_url, vm_properties_cfg,default=GLIDEIN_DEFAULT_VALUES.ec2_url) # usually should be empty in the configuration
+   #default_max_lifetime = make_key_value(PARAMETERS.default_max_lifetime,vm_properties_cfg,default=GLIDEIN_DEFAULT_VALUES.default_max_lifetime)
+   #contextualize_protocol = make_key_value(PARAMETERS.contextualize_protocol,vm_properties_cfg,default=GLIDEIN_DEFAULT_VALUES.contextualize_protocol)
+   #disable_shutdown = make_key_value(PARAMETERS.disable_shutdown,vm_properties_cfg,default=GLIDEIN_DEFAULT_VALUES.disable_shutdown)
+   #ec2_url = make_key_value(PARAMETERS.ec2_url, vm_properties_cfg,default=GLIDEIN_DEFAULT_VALUES.ec2_url) # usually should be empty in the configuration
+
+   default_max_lifetime = parameters.key_value_parameter(PARAMETERS.param_default_max_lifetime)
+   contextualize_protocol = parameters.key_value_parameter(PARAMETERS.param_contextualize_protocol)
+   disable_shutdown = parameters.key_value_parameter(PARAMETERS.param_disable_shutdown)
+   ec2_url = parameters.key_value_parameter(PARAMETERS.param_ec2_url)
 
    glidein_config_file['[DEFAULTS]'] = [default_max_lifetime,contextualize_protocol,disable_shutdown,ec2_url]
 
    # configure values from the [GRID_ENV] section
    environment = ''
    try:
-       environment = vm_properties_cfg[PARAMETERS.environment]
+       environment = getattr(parameters,PARAMETERS.param_environment)
    except KeyError:
        pass
    except Exception,e:
@@ -119,9 +220,9 @@ def handle(_name, cfg, cloud, log, _args):
    glidein_config_file['[GRID_ENV]'] = [environment]
    
    # default [GLIDEIN_USER] section
-   user_name = make_key_value(PARAMETERS.user_name, vm_properties_cfg, default=GLIDEIN_DEFAULT_VALUES.user_name)
-   user_home = make_key_value(PARAMETERS.user_home,vm_properties_cfg, default=GLIDEIN_DEFAULT_VALUES.user_home)
-   user_ids = make_key_value(PARAMETERS.user_ids,vm_properties_cfg, default=GLIDEIN_DEFAULT_VALUES.user_ids)
+   user_name = parameters.key_value_parameter(PARAMETERS.param_user_name)
+   user_home = make_key_value(PARAMETERS.param_user_home)
+   user_ids = make_key_value(PARAMETERS.param_user_ids)
 
    glidein_config_file['[GLIDEIN_USER]'] = [user_name,user_home,user_ids]
 
@@ -139,13 +240,14 @@ def handle(_name, cfg, cloud, log, _args):
    glidein_startup_cfg = None
    try:
        glidein_startup_cfg = glidein_cfg[SECTIONS.glidein_startup]
+       properties.update(glidein_startup_cfg)
    except KeyError:
        print MSG.cannotuse % SECTIONS.glidein_startup
        glidein_startup_cfg = dict()
        
-   args = make_key_value(PARAMETERS.args,glidein_startup_cfg,default='')
-   proxy_file_name = make_key_value(PARAMETERS.proxy_file_name,glidein_startup_cfg,default='')
-   webbase = make_key_value(PARAMETERS.webbase,glidein_startup_cfg,default='')
+   args = parameters.key_value_parameter(PARAMETERS.param_args)
+   proxy_file_name = parameters.key_value_parameter(PARAMETERS.param_proxy_file_name)
+   webbase = parameters.key_value_parameter(PARAMETERS.param_webbase)
 
    content = '\n'.join([args,proxy_file_name,webbase])
    with open(PATHS.runtime_directory+'/'+PATHS.glidein_userdata_file,'w') as fh:
@@ -157,6 +259,7 @@ def handle(_name, cfg, cloud, log, _args):
    proxy = None
    try:
        proxy = glidein_cfg[SECTIONS.proxy]
+       parameters.update({PARAMETERS.param_proxy:proxy})
    except KeyError:
        print MSG.cannotuse % SECTIONS.proxy
        proxy = base64.b64encode(MSG.emptyfile)
@@ -184,12 +287,12 @@ def handle(_name, cfg, cloud, log, _args):
    additional_args = ''
    try:
        additional_args = str(glidein_cfg[SECTIONS.additional_args])
+       parameters.update({PARAMETERS.additional_args,additional_args})
    except KeyError:
        print MSG.cannotuse % SECTIONS.additional_args
 
    # glidein will eventually eat this file
    with open(PATHS.runtime_directory+'/'+ PATHS.global_userdata_file,'w') as fh:
        fh.write(''.join([tar_encoded,'####',additional_args]))
-
 
    log.info("done.")
